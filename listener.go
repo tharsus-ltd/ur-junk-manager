@@ -2,6 +2,9 @@ package main
 
 import (
 	"log"
+	"os"
+	"strconv"
+	"time"
 
 	"github.com/streadway/amqp"
 )
@@ -13,7 +16,13 @@ func failOnError(err error, msg string) {
 }
 
 func main() {
-    conn, err := amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
+	// Pause while rabbitmq inits
+	start_time, err := strconv.ParseInt(os.Getenv("STARTUP_TIME"), 10, 64)
+	failOnError(err, "Failed to get start time")
+	log.Printf("Waiting %d seconds for rabbitmq", start_time)
+	time.Sleep(time.Duration(start_time) * time.Second)
+
+    conn, err := amqp.Dial("amqp://guest:guest@rabbitmq/")
     failOnError(err, "Failed to connect to RabbitMQ")
     defer conn.Close()
 
@@ -21,15 +30,35 @@ func main() {
     failOnError(err, "Failed to open a channel")
     defer ch.Close()
 
+	err = ch.ExchangeDeclare(
+		"micro-rockets", // name
+		"topic",      // type
+		true,         // durable
+		false,        // auto-deleted
+		false,        // internal
+		false,        // no-wait
+		nil,          // arguments
+	)
+	failOnError(err, "Failed to declare an exchange")
+
     q, err := ch.QueueDeclare(
         "junk-listener", // name
         false,   // durable
         false,   // delete when unused
-        false,   // exclusive
+        true,   // exclusive
         false,   // no-wait
         nil,     // arguments
     )
     failOnError(err, "Failed to declare a queue")
+
+	err = ch.QueueBind(
+		q.Name,        			// queue name
+		"rocket.*.updated",     // routing key
+		"micro-rockets", 		// exchange
+		false,					// no-wait
+		nil,					// arguments
+	)
+	failOnError(err, "Failed to bind a queue")
 
     msgs, err := ch.Consume(
         q.Name, // queue
