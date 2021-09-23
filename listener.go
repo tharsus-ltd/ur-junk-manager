@@ -9,10 +9,23 @@ import (
 	"github.com/streadway/amqp"
 )
 
+type Junk struct {
+	altitude int
+	size int
+}
+
+var junks = make(chan Junk, 200)
+
 func failOnError(err error, msg string) {
     if err != nil {
         log.Fatalf("%s: %s", msg, err)
     }
+}
+
+func junk_creator(junks) {
+	for {
+		
+	}
 }
 
 func main() {
