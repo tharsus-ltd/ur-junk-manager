@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"strconv"
 	"time"
@@ -9,12 +12,23 @@ import (
 	"github.com/streadway/amqp"
 )
 
-type Junk struct {
-	altitude int
-	size int
+type Rocket struct {
+	Num_engines  int `json:"num_engines"`
+	Height       int `json:"height"`
+	Id           string `json:"id"`
+	Fuel         float32 `json:"fuel"`
+	Altitude     float32 `json:"altitude"`
+	Velocity     float32 `json:"velocity"`
+	Crashed      bool `json:"crashed"`
+	Launched     bool `json:"launched"`
+	Max_altitude float32 `json:"max_altitude"`
+	Status       string `json:"status"`
 }
 
-var junks = make(chan Junk, 200)
+type Event struct {
+	Rocket   Rocket `json:"rocket"`
+	Username string `json:"username"`
+}
 
 func failOnError(err error, msg string) {
     if err != nil {
@@ -22,18 +36,19 @@ func failOnError(err error, msg string) {
     }
 }
 
-func junk_creator(junks) {
-	for {
-		
-	}
-}
-
 func main() {
 	// Pause while rabbitmq inits
 	start_time, err := strconv.ParseInt(os.Getenv("STARTUP_TIME"), 10, 64)
-	failOnError(err, "Failed to get start time")
+	failOnError(err, "Failed to get STARTUP_TIME")
+
+    junk_prob, err := strconv.ParseInt(os.Getenv("JUNK_PROBABILITY"), 10, 64)
+	failOnError(err, "Failed to get JUNK_PROBABILITY")
+
 	log.Printf("Waiting %d seconds for rabbitmq", start_time)
 	time.Sleep(time.Duration(start_time) * time.Second)
+
+    s1 := rand.NewSource(time.Now().UnixNano())
+    r1 := rand.New(s1)
 
     conn, err := amqp.Dial("amqp://guest:guest@rabbitmq/")
     failOnError(err, "Failed to connect to RabbitMQ")
@@ -88,7 +103,36 @@ func main() {
 
     go func() {
         for d := range msgs {
-            log.Printf("Received a message: %s", d.Body)
+
+            var evt Event
+            
+            err := json.Unmarshal(d.Body, &evt)
+            failOnError(err, "Failed to decode rocket.updated event")
+
+            // if the rocket is above a certain altitude, there is a
+            // chance it will be hit by junk:
+            // https://www.sciencedirect.com/science/article/pii/S0094576514002872
+            if !evt.Rocket.Crashed && evt.Rocket.Altitude >= 600000 && evt.Rocket.Altitude <= 1200000 {
+                var modifier int64 = int64((evt.Rocket.Height / 2000) * 100)
+                if int64(r1.Intn(100)) > junk_prob - modifier {
+                    log.Printf("Rocket: %s has hit some space junk!", evt.Rocket.Id)
+                    // junk has hit the spacecraft!
+                    evt.Rocket.Status = "Hit by space junk! 🛰🔥"
+                    evtJson, err := json.Marshal(evt)
+                    failOnError(err, "Error marhsalling json data")
+
+                    err = ch.Publish(
+                        "micro-rockets",                                    // exchange
+                        fmt.Sprintf("rocket.%s.crashed", evt.Rocket.Id),    // routing key
+                        false,                                              // mandatory
+                        false,                                              // immediate
+                        amqp.Publishing{
+                                ContentType: "text/json",
+                                Body:        evtJson,
+                        })
+                    failOnError(err, "Failed to publish a message")
+                }
+            }
         }
     }()
 
