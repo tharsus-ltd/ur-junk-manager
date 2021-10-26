@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/ext"
 	"github.com/streadway/amqp"
 )
 
@@ -30,13 +32,83 @@ type Event struct {
 	Username string `json:"username"`
 }
 
+
 func failOnError(err error, msg string) {
     if err != nil {
         log.Fatalf("%s: %s", msg, err)
     }
 }
 
+func handleMessage(tracer opentracing.Tracer, d amqp.Delivery, junk_prob int64, r1 *rand.Rand, ch *amqp.Channel) {
+    var evt Event
+            
+    carrier := amqpHeadersCarrier(d.Headers)
+    wireCtx, wireErr := tracer.Extract(
+        opentracing.TextMap,
+        carrier,
+    )
+    if wireErr != nil {
+        failOnError(wireErr, "Failed to get header context from message")
+    }
+
+    span := tracer.StartSpan(
+        "rocket.updated",
+        ext.RPCServerOption(wireCtx),
+    )
+    defer span.Finish()
+
+    err := json.Unmarshal(d.Body, &evt)
+    failOnError(err, "Failed to decode rocket.updated event")
+
+    // if the rocket is above a certain altitude, there is a
+    // chance it will be hit by junk:
+    // https://www.sciencedirect.com/science/article/pii/S0094576514002872
+    if !evt.Rocket.Crashed && evt.Rocket.Altitude >= 600000 && evt.Rocket.Altitude <= 1200000 {
+        var modifier int64 = int64((evt.Rocket.Height / 2000) * 100)
+        if int64(r1.Intn(100)) > junk_prob - modifier {
+
+            // junk has hit the spacecraft!
+            log.Printf("Rocket: %s has hit some space junk!", evt.Rocket.Id)
+            span.LogKV("event", "rocket will crash")
+            
+            evt.Rocket.Status = "Hit by space junk! 🛰🔥"
+            sendMessage(evt, fmt.Sprintf("rocket.%s.crashed", evt.Rocket.Id), ch, tracer, span)
+        }
+    }
+}
+
+func sendMessage(body Event, topic string, ch *amqp.Channel, tracer opentracing.Tracer, span opentracing.Span) {
+
+    evtJson, err := json.Marshal(body)
+    failOnError(err, "Error marhsalling json data")
+
+    msg := amqp.Publishing{
+        ContentType: "text/json",
+        Body:        evtJson,
+    }
+    headers := amqpHeadersCarrier(msg.Headers)
+
+    tracer.Inject(
+        span.Context(),
+        opentracing.TextMap,
+        headers,
+    )
+
+    err = ch.Publish(
+        "micro-rockets",        // exchange
+        topic,                  // routing key
+        false,                  // mandatory
+        false,                  // immediate
+        msg)
+    failOnError(err, "Failed to publish a message")
+
+}
+
 func main() {
+    
+    tracer, closer := Init("Junk Manager")
+    defer closer.Close()
+
 	// Pause while rabbitmq inits
 	start_time, err := strconv.ParseInt(os.Getenv("STARTUP_TIME"), 10, 64)
 	failOnError(err, "Failed to get STARTUP_TIME")
@@ -103,36 +175,7 @@ func main() {
 
     go func() {
         for d := range msgs {
-
-            var evt Event
-            
-            err := json.Unmarshal(d.Body, &evt)
-            failOnError(err, "Failed to decode rocket.updated event")
-
-            // if the rocket is above a certain altitude, there is a
-            // chance it will be hit by junk:
-            // https://www.sciencedirect.com/science/article/pii/S0094576514002872
-            if !evt.Rocket.Crashed && evt.Rocket.Altitude >= 600000 && evt.Rocket.Altitude <= 1200000 {
-                var modifier int64 = int64((evt.Rocket.Height / 2000) * 100)
-                if int64(r1.Intn(100)) > junk_prob - modifier {
-                    log.Printf("Rocket: %s has hit some space junk!", evt.Rocket.Id)
-                    // junk has hit the spacecraft!
-                    evt.Rocket.Status = "Hit by space junk! 🛰🔥"
-                    evtJson, err := json.Marshal(evt)
-                    failOnError(err, "Error marhsalling json data")
-
-                    err = ch.Publish(
-                        "micro-rockets",                                    // exchange
-                        fmt.Sprintf("rocket.%s.crashed", evt.Rocket.Id),    // routing key
-                        false,                                              // mandatory
-                        false,                                              // immediate
-                        amqp.Publishing{
-                                ContentType: "text/json",
-                                Body:        evtJson,
-                        })
-                    failOnError(err, "Failed to publish a message")
-                }
-            }
+            handleMessage(tracer, d, junk_prob, r1, ch)
         }
     }()
 
