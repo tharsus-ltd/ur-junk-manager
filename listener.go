@@ -39,7 +39,7 @@ func failOnError(err error, msg string) {
     }
 }
 
-func handleMessage(tracer opentracing.Tracer, d amqp.Delivery, junk_prob int64, r1 *rand.Rand, ch *amqp.Channel) {
+func handleMessage(tracer opentracing.Tracer, d amqp.Delivery, r1 *rand.Rand, ch *amqp.Channel) {
     var evt Event
             
     carrier := amqpHeadersCarrier(d.Headers)
@@ -60,12 +60,21 @@ func handleMessage(tracer opentracing.Tracer, d amqp.Delivery, junk_prob int64, 
     err := json.Unmarshal(d.Body, &evt)
     failOnError(err, "Failed to decode rocket.updated event")
 
+    junk_prob, err := strconv.ParseInt(os.Getenv("JUNK_PROBABILITY"), 10, 64)
+	failOnError(err, "Failed to get JUNK_PROBABILITY")
+
+    junk_alt_min, err := strconv.ParseFloat(os.Getenv("JUNK_ALT_MIN"), 32)
+	failOnError(err, "Failed to get JUNK_ALT_MIN")
+
+    junk_alt_max, err := strconv.ParseFloat(os.Getenv("JUNK_ALT_MAX"), 32)
+	failOnError(err, "Failed to get JUNK_ALT_MIN")
+
     // if the rocket is above a certain altitude, there is a
     // chance it will be hit by junk:
     // https://www.sciencedirect.com/science/article/pii/S0094576514002872
-    if !evt.Rocket.Crashed && evt.Rocket.Altitude >= 600000 && evt.Rocket.Altitude <= 1200000 {
-        var modifier int64 = int64((evt.Rocket.Height / 2000) * 100)
-        if int64(r1.Intn(100)) > junk_prob - modifier {
+    if !evt.Rocket.Crashed && evt.Rocket.Altitude >= float32(junk_alt_min) && evt.Rocket.Altitude <= float32(junk_alt_max) {
+        // var modifier int64 = int64((evt.Rocket.Height / 2000) * 100)
+        if int64(r1.Intn(100)) > junk_prob {
 
             // junk has hit the spacecraft!
             log.Printf("Rocket: %s has hit some space junk!", evt.Rocket.Id)
@@ -112,9 +121,6 @@ func main() {
 	// Pause while rabbitmq inits
 	start_time, err := strconv.ParseInt(os.Getenv("STARTUP_TIME"), 10, 64)
 	failOnError(err, "Failed to get STARTUP_TIME")
-
-    junk_prob, err := strconv.ParseInt(os.Getenv("JUNK_PROBABILITY"), 10, 64)
-	failOnError(err, "Failed to get JUNK_PROBABILITY")
 
 	log.Printf("Waiting %d seconds for rabbitmq", start_time)
 	time.Sleep(time.Duration(start_time) * time.Second)
@@ -175,7 +181,7 @@ func main() {
 
     go func() {
         for d := range msgs {
-            handleMessage(tracer, d, junk_prob, r1, ch)
+            handleMessage(tracer, d, r1, ch)
         }
     }()
 
