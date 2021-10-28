@@ -2,10 +2,11 @@ package main
 
 import (
 	"io"
-	"os"
 
 	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/uber/jaeger-client-go"
 	config "github.com/uber/jaeger-client-go/config"
+	"github.com/uber/jaeger-client-go/log"
 )
 
 // amqpHeadersCarrier satisfies both TextMapWriter and TextMapReader.
@@ -45,26 +46,20 @@ func (c amqpHeadersCarrier) Set(key, val string) {
 	c[key] = val
 }
 
-func Init(service string) (opentracing.Tracer, io.Closer) {
-	
-	os.Setenv("JAEGER_SERVICE_NAME", service)
-	os.Setenv("JAEGER_AGENT_HOST", "jaeger")
-	os.Setenv("JAEGER_AGENT_PORT", "6831")
-	os.Setenv("JAEGER_SAMPLER_TYPE", "const")
-	os.Setenv("JAEGER_SAMPLER_PARAM", "1")
-	os.Setenv("JAEGER_REPORTER_LOG_SPANS", "true")
+func Init(service string, testing bool) (opentracing.Tracer, io.Closer) {
 
-	defcfg := &config.Configuration{
-		Sampler: &config.SamplerConfig{
-			Type:  "const",
-			Param: 1,
-		},
-		Reporter: &config.ReporterConfig{
-			LogSpans: true,
-		},
+	if (testing) {
+		tracer, closer := jaeger.NewTracer(
+			"TestService",
+			jaeger.NewConstSampler(true),
+			jaeger.NewInMemoryReporter(),
+			jaeger.TracerOptions.Metrics(jaeger.NewNullMetrics()),
+			jaeger.TracerOptions.Logger(log.NullLogger),
+		)
+		return tracer, closer
 	}
 
-	cfg, err := defcfg.FromEnv()
+	cfg, err := config.FromEnv()
 	if err != nil {
 		panic("Could not parse Jaeger env vars: " + err.Error())
 	}

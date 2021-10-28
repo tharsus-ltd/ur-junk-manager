@@ -94,6 +94,7 @@ func sendMessage(body Event, topic string, ch *amqp.Channel, tracer opentracing.
     msg := amqp.Publishing{
         ContentType: "text/json",
         Body:        evtJson,
+        Headers:     map[string]interface{}{},
     }
     headers := amqpHeadersCarrier(msg.Headers)
 
@@ -115,7 +116,7 @@ func sendMessage(body Event, topic string, ch *amqp.Channel, tracer opentracing.
 
 func main() {
     
-    tracer, closer := Init("Junk Manager")
+    tracer, closer := Init("Junk Manager", false)
     defer closer.Close()
 
 	// Pause while rabbitmq inits
